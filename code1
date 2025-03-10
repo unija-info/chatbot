@@ -1,0 +1,833 @@
+// Configuration
+const BOT_TOKEN = '7089240826:AAFpnLiids2YTxOzf1MimGtJbIx5suW0da4';
+const ADMIN_GROUP_ID = '-1001840372716';
+const ADMIN_TOPIC_ID = 26041;
+const CHANNEL_ID = '@kampusunisza'; // Add your channel ID here
+const SHEET_ID = '13wxVAFwlajUlumltOPwN0DfYZTXlJcTSlMKL4tFOwPQ'; // Add your Google Sheet ID here
+const WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbx70REvO9KCVLPRnf5yT47YAavxU6ot6KmPp2Imf9FQqCny909g9S6JMrNtRyindrl01A/exec'; // Add your web app URL after deployment
+
+// Sheet names
+const USER_SHEET = 'Users';
+const ANALYTICS_SHEET = 'Analytics';
+const BANNED_SHEET = 'BannedUsers';
+
+// Initialize the bot and set up sheets
+function doPost(e) {
+  try {
+    const update = JSON.parse(e.postData.contents);
+    processUpdate(update);
+    return ContentService.createTextOutput('OK');
+  } catch (error) {
+    logError(error);
+    return ContentService.createTextOutput('Error: ' + error.message);
+  }
+}
+
+function testProcessUpdate() {
+  const fakeUpdate = {
+    message: {
+      message_id: 12345,
+      from: {
+        id: 123456789,
+        first_name: "Test",
+        last_name: "User",
+        username: "testuser"
+      },
+      chat: {
+        id: 123456789
+      },
+      text: "Test message"
+    }
+  };
+  processUpdate(fakeUpdate);
+  Logger.log("Process update test complete");
+}
+
+function testCallbackQuery(action) {
+  const fakeCallback = {
+    id: "123456789",
+    from: {
+      id: 987654321
+    },
+    message: {
+      message_id: 12345,
+      chat: {
+        id: -1001840372716 // Admin group ID
+      }
+    },
+    data: action // e.g., "acknowledge" or "send_12345_123456789"
+  };
+  handleCallbackQuery(fakeCallback);
+  Logger.log("Callback query test complete for action: " + action);
+}
+
+function runTests() {
+  // Get spreadsheet reference
+  const ss = SpreadsheetApp.openById(SHEET_ID);
+  
+  // Test user recording
+  const testUser = {
+    id: 123456789,
+    first_name: "Test",
+    last_name: "User",
+    username: "testuser"
+  };
+  recordUser(testUser);
+  Logger.log("User recording test complete");
+  
+  // Test message count incrementation
+  incrementMessageCount(testUser.id);
+  Logger.log("Message count test complete");
+  
+  // Test analytics incrementation
+  incrementAnalyticValue('Messages Received');
+  incrementAnalyticValue('Messages Forwarded');
+  Logger.log("Analytics test complete");
+  
+  // Test ban functionality
+  banUser(testUser.id, "1d", 987654321);
+  Logger.log("Is user banned: " + isUserBanned(testUser.id));
+  
+  // Test ban expiration (simulated)
+  const bannedSheet = ss.getSheetByName(BANNED_SHEET);
+  const banRow = 2; // Assuming this is the first ban record
+  const unbanDate = new Date();
+  unbanDate.setDate(unbanDate.getDate() - 1); // Set to yesterday
+  bannedSheet.getRange(banRow, 4).setValue(unbanDate);
+  checkExpiredBans();
+  Logger.log("Ban expiration test complete");
+  
+  // Check user status after all tests
+  Logger.log("Final user status: " + getUserStatus(testUser.id));
+}
+
+// Set up webhook for the Telegram bot
+function setWebhook() {
+  const url = 'https://api.telegram.org/bot' + BOT_TOKEN + '/setWebhook?url=' + WEBHOOK_URL;
+  const response = UrlFetchApp.fetch(url);
+  Logger.log(response.getContentText());
+}
+
+// Initialize spreadsheet
+function setupSheets() {
+  const ss = SpreadsheetApp.openById(SHEET_ID);
+  
+  // Create Users sheet if it doesn't exist
+  if (!ss.getSheetByName(USER_SHEET)) {
+    const usersSheet = ss.insertSheet(USER_SHEET);
+    usersSheet.appendRow(['User ID', 'First Name', 'Last Name', 'Username', 'Join Date', 'Message Count', 'Last Message', 'Status']);
+  }
+  
+  // Create Analytics sheet if it doesn't exist
+  if (!ss.getSheetByName(ANALYTICS_SHEET)) {
+    const analyticsSheet = ss.insertSheet(ANALYTICS_SHEET);
+    analyticsSheet.appendRow(['Date', 'New Users', 'Messages Received', 'Messages Forwarded', 'Replies Sent', 'Bans Issued']);
+  }
+  
+  // Create Banned Users sheet if it doesn't exist
+  if (!ss.getSheetByName(BANNED_SHEET)) {
+    const bannedSheet = ss.insertSheet(BANNED_SHEET);
+    bannedSheet.appendRow(['User ID', 'Ban Date', 'Ban Duration', 'Unban Date', 'Banned By', 'Reason']);
+  }
+}
+
+// Add this function to the code
+function isSpecialUser(userId) {
+  // List of special user IDs exempt from rate limit
+  const specialUsers = [123456789, 987654321]; // Replace with actual user IDs
+  return specialUsers.includes(Number(userId));
+}
+
+// Then modify the checkRateLimit function
+function checkRateLimit(userId) {
+  // Check if user is special first
+  if (isSpecialUser(userId)) {
+    return true; // Special users bypass rate limit
+  }
+  
+  // Rest of the existing function remains the same
+  const props = PropertiesService.getScriptProperties();
+  const lastMessageTime = props.getProperty('LAST_MSG_' + userId);
+  // ...rest of function...
+}
+// Process incoming updates from Telegram
+function processUpdate(update) {
+  if (update.message) {
+    // Handle new messages
+    handleMessage(update.message);
+  } else if (update.callback_query) {
+    // Handle button presses
+    handleCallbackQuery(update.callback_query);
+  }
+}
+
+// Handle incoming messages
+// In the handleMessage function, modify the rate limit check:
+function handleMessage(message) {
+  const userId = message.from.id;
+  const chatId = message.chat.id;
+  const text = message.text || '';
+  
+  // Record the user in the spreadsheet
+  recordUser(message.from);
+  
+  // Check if user is banned
+  if (isUserBanned(userId)) {
+    sendMessage(chatId, "Sorry, you're currently banned from using this bot.");
+    return;
+  }
+  
+  // Handle commands separately
+  if (text.startsWith('/')) {
+    handleCommand(message);
+    return;
+  }
+  
+  // Check if user has acknowledged the greeting
+  const userStatus = getUserStatus(userId);
+  if (userStatus !== 'active') {
+    sendMessage(chatId, "Please start the bot with /start and acknowledge the greeting first.");
+    return;
+  }
+  
+  // Only check rate limit for regular messages, not for admin replies
+  // Add admin check here if needed
+  const isAdmin = false; // Replace with actual admin check logic
+  const isAdminReply = handleAdminReply(message);
+  
+  if (!isAdmin && !isAdminReply) {
+    // Check rate limit (1 message per 3 hours) - only check for non-command messages
+    if (!checkRateLimit(userId)) {
+      sendMessage(chatId, "You can only send 1 message every 3 hours. Please try again later.");
+      return;
+    }
+  }
+  
+  // Forward message to admin group
+  forwardToAdmins(message);
+  
+  // Increment message count and update analytics
+  incrementMessageCount(userId);
+  
+  // Acknowledge receipt to user
+  sendMessage(chatId, "Thank you! Your message has been received and will be reviewed by our team.");
+}
+
+// Get user status from the sheet
+function getUserStatus(userId) {
+  try {
+    const ss = SpreadsheetApp.openById(SHEET_ID);
+    const usersSheet = ss.getSheetByName(USER_SHEET);
+    const userData = usersSheet.getDataRange().getValues();
+    
+    for (let i = 1; i < userData.length; i++) {
+      if (userData[i][0] == userId) {
+        return userData[i][7] || 'new';
+      }
+    }
+    return 'new';
+  } catch (error) {
+    logError(error);
+    return 'new';
+  }
+}
+
+// Handle bot commands
+function handleCommand(message) {
+  const text = message.text || '';
+  const chatId = message.chat.id;
+  const userId = message.from.id;
+  
+  if (text === '/start') {
+    // Welcome message with acknowledge button
+    const keyboard = {
+      inline_keyboard: [
+        [{ text: "I understand", callback_data: "acknowledge" }]
+      ]
+    };
+    
+    // Set user status to 'new' in case they're starting over
+    setUserStatus(userId, 'new');
+    
+    sendMessage(
+      chatId, 
+      "Welcome to our message forwarding bot! Press the button below to acknowledge and start sending messages.", 
+      keyboard
+    );
+  }
+}
+
+// Handle button presses
+// Fix the handleCallbackQuery function to prevent duplicate responses:
+function handleCallbackQuery(callbackQuery) {
+  const userId = callbackQuery.from.id;
+  const messageId = callbackQuery.message.message_id;
+  const chatId = callbackQuery.message.chat.id;
+  const data = callbackQuery.data;
+  
+  // Parse callback data
+  const [action, param1, param2] = data.split('_');
+  
+  // Handle user acknowledgement
+  if (action === 'acknowledge') {
+    // Check if user is already active to prevent duplicate messages
+    const currentStatus = getUserStatus(userId);
+    
+    // Only send confirmation and update status if user is not already active
+    if (currentStatus !== 'active') {
+      // Update status first
+      setUserStatus(userId, 'active');
+      
+      // Then send confirmation
+      sendMessage(chatId, "Great! You can now send messages to us. We'll forward them to our channel if approved.");
+      
+      // Edit the original message to remove the button to prevent multiple presses
+      editMessageReplyMarkup(chatId, messageId, { inline_keyboard: [] });
+    }
+    
+    // Always answer the callback query to remove the loading indicator
+    answerCallbackQuery(callbackQuery.id, "You're all set!");
+    
+    // Edit the original message to remove the button
+    editMessageReplyMarkup(chatId, messageId, { inline_keyboard: [] });
+  }
+  
+  // Handle admin actions
+  else if (action === 'send') {
+    const userMessageId = param1;
+    const userChatId = param2;
+    forwardMessageToChannel(userMessageId, userChatId);
+    answerCallbackQuery(callbackQuery.id, "Message forwarded to channel!");
+    editMessageReplyMarkup(ADMIN_GROUP_ID, messageId, { 
+      inline_keyboard: [[{ text: "✅ Sent to channel", callback_data: "noaction" }]]
+    }, ADMIN_TOPIC_ID);
+  }
+  
+  else if (action === 'reply') {
+    const userChatId = param1;
+    // Create an admin reply session
+    PropertiesService.getScriptProperties().setProperty('REPLY_TO_' + userId, userChatId);
+    sendMessage(chatId, "Please send your reply. It will be forwarded to the user.");
+    answerCallbackQuery(callbackQuery.id, "Preparing reply...");
+  }
+  
+  else if (action === 'ban') {
+    const userChatId = param1;
+    // Show ban options
+    const keyboard = {
+      inline_keyboard: [
+        [
+          { text: "1 day", callback_data: "bantime_" + userChatId + "_1d" },
+          { text: "3 days", callback_data: "bantime_" + userChatId + "_3d" },
+          { text: "7 days", callback_data: "bantime_" + userChatId + "_7d" }
+        ],
+        [{ text: "Permanent", callback_data: "bantime_" + userChatId + "_permanent" }]
+      ]
+    };
+    
+    sendMessage(chatId, "Select ban duration for user " + userChatId, keyboard);
+    answerCallbackQuery(callbackQuery.id, "Selecting ban duration...");
+  }
+  
+  else if (action === 'bantime') {
+    const userChatId = param1;
+    const duration = param2;
+    banUser(userChatId, duration, userId);
+    sendMessage(chatId, `User ${userChatId} has been banned for ${duration}`);
+    answerCallbackQuery(callbackQuery.id, "User banned successfully");
+    
+    // Notify the banned user
+    const durationText = duration === 'permanent' ? 'permanently' : `for ${duration}`;
+    sendMessage(userChatId, `You have been banned ${durationText} from using this bot.`);
+  }
+  
+  else if (action === 'noaction') {
+    // Do nothing for clicked status buttons
+    answerCallbackQuery(callbackQuery.id);
+  }
+}
+
+// Check if a user's rate limit allows them to send a message
+// Add a proper check in checkRateLimit to exempt users who haven't sent messages yet
+function checkRateLimit(userId) {
+  const props = PropertiesService.getScriptProperties();
+  const lastMessageTime = props.getProperty('LAST_MSG_' + userId);
+  
+  if (!lastMessageTime) {
+    // First message - no rate limit
+    props.setProperty('LAST_MSG_' + userId, new Date().toString());
+    return true;
+  }
+  
+  const lastTime = new Date(lastMessageTime);
+  const currentTime = new Date();
+  const hoursDiff = (currentTime - lastTime) / (1000 * 60 * 60);
+  
+  if (hoursDiff < 3) {
+    return false; // Rate limited
+  }
+  
+  // Update last message time
+  props.setProperty('LAST_MSG_' + userId, new Date().toString());
+  return true;
+}
+
+// Forward user message to admin group
+function forwardToAdmins(message) {
+  const userId = message.from.id;
+  const messageId = message.message_id;
+  const chatId = message.chat.id;
+  
+  // Get user information
+  const firstName = message.from.first_name || '';
+  const lastName = message.from.last_name || '';
+  const username = message.from.username ? '@' + message.from.username : 'No username';
+  
+  // Create info message
+  const infoText = `👤 *Message from user:*\nID: ${userId}\nName: ${firstName} ${lastName}\nUsername: ${username}`;
+  
+  // Send info message to admin group
+  sendMessage(ADMIN_GROUP_ID, infoText, null, ADMIN_TOPIC_ID, 'Markdown');
+  
+  // Forward the actual message
+  const forwardedMsg = forwardMessage(ADMIN_GROUP_ID, chatId, messageId, ADMIN_TOPIC_ID);
+  
+  // If we have a forwarded message ID, add action buttons
+  if (forwardedMsg && forwardedMsg.message_id) {
+    const keyboard = {
+      inline_keyboard: [
+        [
+          { text: "📢 Send to channel", callback_data: `send_${messageId}_${chatId}` },
+          { text: "↩️ Reply", callback_data: `reply_${chatId}` },
+          { text: "🚫 Ban", callback_data: `ban_${chatId}` }
+        ]
+      ]
+    };
+    
+    sendMessage(ADMIN_GROUP_ID, "Actions:", keyboard, ADMIN_TOPIC_ID);
+  }
+}
+
+// Forward a message to the public channel
+function forwardMessageToChannel(messageId, fromChatId) {
+  if (!CHANNEL_ID) {
+    sendMessage(ADMIN_GROUP_ID, "Error: Channel ID not configured", null, ADMIN_TOPIC_ID);
+    return;
+  }
+  
+  const result = forwardMessage(CHANNEL_ID, fromChatId, messageId);
+  
+  // Update analytics
+  incrementAnalyticValue('Messages Forwarded');
+  
+  return result;
+}
+
+// Ban a user for a specified duration
+function banUser(userId, duration, adminId) {
+  const ss = SpreadsheetApp.openById(SHEET_ID);
+  const bannedSheet = ss.getSheetByName(BANNED_SHEET);
+  
+  // Calculate unban date
+  let unbanDate = null;
+  if (duration !== 'permanent') {
+    const days = parseInt(duration.replace('d', ''));
+    unbanDate = new Date();
+    unbanDate.setDate(unbanDate.getDate() + days);
+  }
+  
+  // Add to banned users sheet
+  bannedSheet.appendRow([
+    userId,
+    new Date(),
+    duration,
+    unbanDate,
+    adminId,
+    ''
+  ]);
+  
+  // Update user status in Users sheet
+  setUserStatus(userId, 'banned');
+  
+  // Update analytics
+  incrementAnalyticValue('Bans Issued');
+}
+
+// Check if a user is banned
+function isUserBanned(userId) {
+  try {
+    const ss = SpreadsheetApp.openById(SHEET_ID);
+    const bannedSheet = ss.getSheetByName(BANNED_SHEET);
+    const bans = bannedSheet.getDataRange().getValues();
+    
+    // Skip header row
+    for (let i = 1; i < bans.length; i++) {
+      const banRecord = bans[i];
+      const bannedUserId = banRecord[0];
+      const unbanDate = banRecord[3];
+      
+      if (bannedUserId == userId) {
+        // Permanent ban (no unban date)
+        if (!unbanDate) {
+          return true;
+        }
+        
+        // Temporary ban
+        const now = new Date();
+        if (now < new Date(unbanDate)) {
+          return true;
+        } else {
+          // Ban period has expired
+          setUserStatus(userId, 'active');
+          return false;
+        }
+      }
+    }
+    
+    return false;
+  } catch (error) {
+    logError(error);
+    return false; // In case of error, allow the user to proceed
+  }
+}
+
+// Set user status in the Users sheet
+function setUserStatus(userId, status) {
+  try {
+    const ss = SpreadsheetApp.openById(SHEET_ID);
+    const usersSheet = ss.getSheetByName(USER_SHEET);
+    const userData = usersSheet.getDataRange().getValues();
+    let userFound = false;
+    
+    for (let i = 1; i < userData.length; i++) {
+      if (userData[i][0] == userId) {
+        // Only update if status is different
+        if (userData[i][7] !== status) {
+          usersSheet.getRange(i + 1, 8).setValue(status);
+        }
+        userFound = true;
+        break;
+      }
+    }
+    
+    // If user not found, add them
+    if (!userFound) {
+      usersSheet.appendRow([
+        userId,
+        '', // First name
+        '', // Last name 
+        '', // Username
+        new Date(), // Join date
+        0, // Message count
+        new Date(), // Last message
+        status // Status
+      ]);
+    }
+  } catch (error) {
+    logError(error);
+  }
+}
+
+// Record new user in the spreadsheet
+function recordUser(user) {
+  const userId = user.id;
+  const firstName = user.first_name || '';
+  const lastName = user.last_name || '';
+  const username = user.username || '';
+  
+  try {
+    const ss = SpreadsheetApp.openById(SHEET_ID);
+    const usersSheet = ss.getSheetByName(USER_SHEET);
+    const userData = usersSheet.getDataRange().getValues();
+    
+    // Check if user already exists
+    for (let i = 1; i < userData.length; i++) {
+      if (userData[i][0] == userId) {
+        // Update user info in case it changed
+        usersSheet.getRange(i + 1, 2).setValue(firstName);
+        usersSheet.getRange(i + 1, 3).setValue(lastName);
+        usersSheet.getRange(i + 1, 4).setValue(username);
+        usersSheet.getRange(i + 1, 7).setValue(new Date()); // Update last seen
+        return;
+      }
+    }
+    
+    // New user
+    usersSheet.appendRow([
+      userId, 
+      firstName, 
+      lastName, 
+      username, 
+      new Date(), // Join date
+      0,          // Message count
+      new Date(), // Last message
+      'new'       // Status
+    ]);
+    
+    // Update analytics
+    incrementAnalyticValue('New Users');
+  } catch (error) {
+    logError(error);
+  }
+}
+
+// Increment message count for a user
+function incrementMessageCount(userId) {
+  try {
+    const ss = SpreadsheetApp.openById(SHEET_ID);
+    const usersSheet = ss.getSheetByName(USER_SHEET);
+    const userData = usersSheet.getDataRange().getValues();
+    
+    for (let i = 1; i < userData.length; i++) {
+      if (userData[i][0] == userId) {
+        const currentCount = userData[i][5] || 0;
+        usersSheet.getRange(i + 1, 6).setValue(currentCount + 1);
+        usersSheet.getRange(i + 1, 7).setValue(new Date()); // Update last message time
+        break;
+      }
+    }
+    
+    // Update analytics
+    incrementAnalyticValue('Messages Received');
+  } catch (error) {
+    logError(error);
+  }
+}
+
+// Update analytics
+function incrementAnalyticValue(metricName) {
+  try {
+    const ss = SpreadsheetApp.openById(SHEET_ID);
+    const analyticsSheet = ss.getSheetByName(ANALYTICS_SHEET);
+    
+    // Get today's date in YYYY-MM-DD format
+    const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+    
+    // Get all data
+    const data = analyticsSheet.getDataRange().getValues();
+    const headers = data[0];
+    
+    // Find column index for the metric
+    let colIndex = -1;
+    for (let i = 0; i < headers.length; i++) {
+      if (headers[i] === metricName) {
+        colIndex = i;
+        break;
+      }
+    }
+    
+    if (colIndex === -1) {
+      return; // Metric not found
+    }
+    
+    // Look for today's row
+    let rowIndex = -1;
+    for (let i = 1; i < data.length; i++) {
+      if (Utilities.formatDate(new Date(data[i][0]), Session.getScriptTimeZone(), "yyyy-MM-dd") === today) {
+        rowIndex = i;
+        break;
+      }
+    }
+    
+    if (rowIndex === -1) {
+      // Create new row for today
+      const newRow = Array(headers.length).fill(0);
+      newRow[0] = new Date(); // Today's date
+      newRow[colIndex] = 1; // Set metric to 1
+      analyticsSheet.appendRow(newRow);
+    } else {
+      // Update existing row
+      const currentValue = data[rowIndex][colIndex] || 0;
+      analyticsSheet.getRange(rowIndex + 1, colIndex + 1).setValue(currentValue + 1);
+    }
+  } catch (error) {
+    logError(error);
+  }
+}
+
+// Telegram API functions
+function sendMessage(chatId, text, replyMarkup = null, threadId = null, parseMode = null) {
+  const url = 'https://api.telegram.org/bot' + BOT_TOKEN + '/sendMessage';
+  
+  const payload = {
+    chat_id: chatId,
+    text: text
+  };
+  
+  if (replyMarkup) {
+    payload.reply_markup = JSON.stringify(replyMarkup);
+  }
+  
+  if (threadId) {
+    payload.message_thread_id = threadId;
+  }
+  
+  if (parseMode) {
+    payload.parse_mode = parseMode;
+  }
+  
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(payload)
+  };
+  
+  try {
+    const response = UrlFetchApp.fetch(url, options);
+    return JSON.parse(response.getContentText());
+  } catch (error) {
+    logError(error);
+    return null;
+  }
+}
+
+function forwardMessage(chatId, fromChatId, messageId, threadId = null) {
+  const url = 'https://api.telegram.org/bot' + BOT_TOKEN + '/forwardMessage';
+  
+  const payload = {
+    chat_id: chatId,
+    from_chat_id: fromChatId,
+    message_id: messageId
+  };
+  
+  if (threadId) {
+    payload.message_thread_id = threadId;
+  }
+  
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(payload)
+  };
+  
+  try {
+    const response = UrlFetchApp.fetch(url, options);
+    return JSON.parse(response.getContentText());
+  } catch (error) {
+    logError(error);
+    return null;
+  }
+}
+
+function answerCallbackQuery(callbackQueryId, text = null) {
+  const url = 'https://api.telegram.org/bot' + BOT_TOKEN + '/answerCallbackQuery';
+  
+  const payload = {
+    callback_query_id: callbackQueryId
+  };
+  
+  if (text) {
+    payload.text = text;
+  }
+  
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(payload)
+  };
+  
+  try {
+    UrlFetchApp.fetch(url, options);
+  } catch (error) {
+    logError(error);
+  }
+}
+
+function editMessageReplyMarkup(chatId, messageId, replyMarkup, threadId = null) {
+  const url = 'https://api.telegram.org/bot' + BOT_TOKEN + '/editMessageReplyMarkup';
+  
+  const payload = {
+    chat_id: chatId,
+    message_id: messageId,
+    reply_markup: JSON.stringify(replyMarkup)
+  };
+  
+  if (threadId) {
+    payload.message_thread_id = threadId;
+  }
+  
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(payload)
+  };
+  
+  try {
+    UrlFetchApp.fetch(url, options);
+  } catch (error) {
+    logError(error);
+  }
+}
+
+// Error logging
+function logError(error) {
+  Logger.log('Error: ' + error.message);
+  // Optionally, you could send error notifications to admins:
+  // sendMessage(ADMIN_GROUP_ID, 'Bot Error: ' + error.message, null, ADMIN_TOPIC_ID);
+}
+
+// Schedule daily cleanup of expired bans
+function setupTriggers() {
+  // Delete all existing triggers
+  const triggers = ScriptApp.getProjectTriggers();
+  for (let i = 0; i < triggers.length; i++) {
+    ScriptApp.deleteTrigger(triggers[i]);
+  }
+  
+  // Create a daily trigger to check for expired bans
+  ScriptApp.newTrigger('checkExpiredBans')
+    .timeBased()
+    .everyDays(1)
+    .atHour(0)
+    .create();
+}
+
+// Check for expired bans and update user status
+function checkExpiredBans() {
+  try {
+    const ss = SpreadsheetApp.openById(SHEET_ID);
+    const bannedSheet = ss.getSheetByName(BANNED_SHEET);
+    const bans = bannedSheet.getDataRange().getValues();
+    const now = new Date();
+    
+    // Skip header row
+    for (let i = 1; i < bans.length; i++) {
+      const banRecord = bans[i];
+      const userId = banRecord[0];
+      const unbanDate = banRecord[3];
+      
+      // If there's an unban date and it has passed
+      if (unbanDate && new Date(unbanDate) <= now) {
+        setUserStatus(userId, 'active');
+        sendMessage(userId, "Your ban has expired. You can now use the bot again.");
+      }
+    }
+  } catch (error) {
+    logError(error);
+  }
+}
+
+// Function to handle admin replies
+function handleAdminReply(message) {
+  const adminId = message.from.id;
+  const replyToProperty = 'REPLY_TO_' + adminId;
+  const userChatId = PropertiesService.getScriptProperties().getProperty(replyToProperty);
+  
+  if (userChatId) {
+    // Forward the reply to the user
+    sendMessage(userChatId, "Reply from admin: " + message.text);
+    
+    // Confirm to admin
+    sendMessage(message.chat.id, "Your reply has been sent to the user.");
+    
+    // Clear the reply session
+    PropertiesService.getScriptProperties().deleteProperty(replyToProperty);
+    
+    // Update analytics
+    incrementAnalyticValue('Replies Sent');
+    
+    return true;
+  }
+  
+  return false;
+}
