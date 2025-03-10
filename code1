@@ -1,10 +1,10 @@
 // Configuration
-const BOT_TOKEN = '7089240826:AAFpnLiids2YTxOzf1MimGtJbIx5suW0da4';
-const ADMIN_GROUP_ID = '-1001840372716';
-const ADMIN_TOPIC_ID = 26041;
+const BOT_TOKEN = '-';
+const ADMIN_GROUP_ID = '-';
+const ADMIN_TOPIC_ID = -;
 const CHANNEL_ID = '@kampusunisza'; // Add your channel ID here
-const SHEET_ID = '13wxVAFwlajUlumltOPwN0DfYZTXlJcTSlMKL4tFOwPQ'; // Add your Google Sheet ID here
-const WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbx70REvO9KCVLPRnf5yT47YAavxU6ot6KmPp2Imf9FQqCny909g9S6JMrNtRyindrl01A/exec'; // Add your web app URL after deployment
+const SHEET_ID = '-'; // Add your Google Sheet ID here
+const WEBHOOK_URL = '-'; // Add your web app URL after deployment
 
 // Sheet names
 const USER_SHEET = 'Users';
